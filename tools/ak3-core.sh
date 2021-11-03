@@ -15,12 +15,8 @@ split_img=$home/split_img;
 # ui_print "<text>" [...]
 ui_print() {
   until [ ! "$1" ]; do
-    if $BOOTMODE; then
-      echo "$1";
-    else
-      echo "ui_print $1
-        ui_print" >> /proc/self/fd/$OUTFD;
-    fi;
+    echo "ui_print $1
+      ui_print" >> /proc/self/fd/$OUTFD;
     shift;
   done;
 }
@@ -96,8 +92,8 @@ split_boot() {
     fi;
     $bin/unpackelf -i $bootimg;
     [ $? != 0 ] && dumpfail=1;
-    mv -f boot.img-zImage kernel.gz;
-    mv -f boot.img-ramdisk.cpio.gz ramdisk.cpio.gz;
+    mv -f boot.img-kernel kernel.gz;
+    mv -f boot.img-ramdisk ramdisk.cpio.gz;
     mv -f boot.img-cmdline cmdline.txt 2>/dev/null;
     if [ -f boot.img-dt -a ! -f "$bin/elftool" ]; then
       case $(od -ta -An -N4 boot.img-dt | sed -e 's/ del//' -e 's/   //g') in
@@ -252,7 +248,7 @@ flash_boot() {
     varlist="name arch os type comp addr ep";
   elif [ -f "$bin/mkbootimg" -a -f "$bin/unpackelf" -a -f boot.img-base ]; then
     mv -f cmdline.txt boot.img-cmdline 2>/dev/null;
-    varlist="cmdline base pagesize kerneloff ramdiskoff tagsoff";
+    varlist="cmdline base pagesize kernel_offset ramdisk_offset tags_offset";
   fi;
   for i in $varlist; do
     if [ -f boot.img-$i ]; then
@@ -312,7 +308,7 @@ flash_boot() {
     $bin/rkcrc -k $ramdisk $home/boot-new.img;
   elif [ -f "$bin/mkbootimg" -a -f "$bin/unpackelf" -a -f boot.img-base ]; then
     [ "$dt" ] && dt="--dt $dt";
-    $bin/mkbootimg --kernel $kernel --ramdisk $ramdisk --cmdline "$cmdline" --base $home --pagesize $pagesize --kernel_offset $kerneloff --ramdisk_offset $ramdiskoff --tags_offset "$tagsoff" $dt --output $home/boot-new.img;
+    $bin/mkbootimg --kernel $kernel --ramdisk $ramdisk --cmdline "$cmdline" --base $base --pagesize $pagesize --kernel_offset $kernel_offset --ramdisk_offset $ramdisk_offset --tags_offset "$tags_offset" $dt --output $home/boot-new.img;
   else
     [ "$kernel" ] && cp -f $kernel kernel;
     [ "$ramdisk" ] && cp -f $ramdisk ramdisk.cpio;
@@ -368,6 +364,7 @@ flash_boot() {
   if [ $? != 0 ]; then
     abort "Repacking image failed"
   fi;
+  [ -f .magisk ] && touch $home/magisk_patched;
 
   cd $home;
   if [ -f "$bin/futility" -a -d "$bin/chromeos" ]; then
@@ -377,16 +374,16 @@ flash_boot() {
     fi;
     [ $? != 0 ] && signfail=1;
   fi;
-  if [ -f "$bin/BootSignature_Android.jar" -a -d "$bin/avb" ]; then
+  if [ -f "$bin/boot_signer-dexed.jar" -a -d "$bin/avb" ]; then
     pk8=$(ls $bin/avb/*.pk8);
     cert=$(ls $bin/avb/*.x509.*);
     case $block in
       *recovery*|*SOS*) avbtype=recovery;;
       *) avbtype=boot;;
     esac;
-    if [ "$(/system/bin/dalvikvm -Xnoimage-dex2oat -cp $bin/BootSignature_Android.jar com.android.verity.BootSignature -verify boot.img 2>&1 | grep VALID)" ]; then
+    if [ "$(/system/bin/dalvikvm -Xnoimage-dex2oat -cp $bin/boot_signer-dexed.jar com.android.verity.BootSignature -verify boot.img 2>&1 | grep VALID)" ]; then
       echo "Signing with AVBv1..." >&2;
-      /system/bin/dalvikvm -Xnoimage-dex2oat -cp $bin/BootSignature_Android.jar com.android.verity.BootSignature /$avbtype boot-new.img $pk8 $cert boot-new-signed.img;
+      /system/bin/dalvikvm -Xnoimage-dex2oat -cp $bin/boot_signer-dexed.jar com.android.verity.BootSignature /$avbtype boot-new.img $pk8 $cert boot-new-signed.img;
     fi;
   fi;
   if [ $? != 0 -o "$signfail" ]; then
@@ -428,7 +425,7 @@ flash_dtbo() {
     fi;
   done;
 
-  if [ "$dtbo" ]; then
+  if [ "$dtbo" -a ! -f dtbo_flashed ]; then
     dtboblock=/dev/block/bootdevice/by-name/dtbo$slot;
     if [ ! -e "$dtboblock" ]; then
       abort "dtbo partition could not be found"
@@ -446,6 +443,7 @@ flash_dtbo() {
     if [ $? != 0 ]; then
       abort "Flashing dtbo failed"
     fi;
+    touch dtbo_flashed;
   fi;
 }
 ### write_boot (repack ramdisk then build, sign and write image and dtbo)
@@ -665,9 +663,11 @@ reset_ak() {
 
   current=$(dirname $home/*-files/current);
   if [ -d "$current" ]; then
-    rm -rf $current/ramdisk;
-    for i in $bootimg boot-new.img; do
+    for i in $bootimg $home/boot-new.img; do
       [ -e $i ] && cp -af $i $current;
+    done;
+    for i in $current/*; do
+      [ -f $i ] && rm -f $home/$(basename $i);
     done;
   fi;
   [ -d $split_img ] && rm -rf $ramdisk;
@@ -678,23 +678,15 @@ reset_ak() {
   else
     rm -rf $patch $home/rdtmp;
   fi;
+  if [ ! "$no_block_display" ]; then
+    ui_print " ";
+  fi;
   setup_ak;
 }
 
 # setup_ak
 setup_ak() {
   local blockfiles parttype name part mtdmount mtdpart mtdname target;
-
-  # allow multi-partition ramdisk modifying configurations (using reset_ak)
-  if [ "$block" ] && [ ! -d "$ramdisk" -a ! -d "$patch" ]; then
-    blockfiles=$home/$(basename $block)-files;
-    if [ "$(ls $blockfiles 2>/dev/null)" ]; then
-      cp -af $blockfiles/* $home;
-    else
-      mkdir -p $blockfiles;
-    fi;
-    touch $blockfiles/current;
-  fi;
 
   # slot detection enabled by is_slot_device=1 or auto (from anykernel.sh)
   case $is_slot_device in
@@ -725,15 +717,40 @@ setup_ak() {
     ;;
   esac;
 
+  # automate simple multi-partition setup for boot_img_hdr_v3 + vendor_boot
+  cd $home;
+  if [ -e "/dev/block/bootdevice/by-name/vendor_boot$slot" -a ! -f vendor_setup ] && [ -f dtb -o -d vendor_ramdisk -o -d vendor_patch ]; then
+    echo "Setting up for simple automatic vendor_boot flashing..." >&2;
+    (mkdir boot-files;
+    mv -f Image* ramdisk patch boot-files;
+    mkdir vendor_boot-files;
+    mv -f dtb vendor_boot-files;
+    mv -f vendor_ramdisk vendor_boot-files/ramdisk;
+    mv -f vendor_patch vendor_boot-files/patch) 2>/dev/null;
+    touch vendor_setup;
+  fi;
+
+  # allow multi-partition ramdisk modifying configurations (using reset_ak)
+  if [ "$block" ] && [ ! -d "$ramdisk" -a ! -d "$patch" ]; then
+    blockfiles=$home/$(basename $block)-files;
+    if [ "$(ls $blockfiles 2>/dev/null)" ]; then
+      cp -af $blockfiles/* $home;
+    else
+      mkdir $blockfiles;
+    fi;
+    touch $blockfiles/current;
+  fi;
+
   # target block partition detection enabled by block=boot recovery or auto (from anykernel.sh)
   case $block in
      auto|"") block=boot;;
   esac;
   case $block in
-    boot|recovery)
+    boot|recovery|vendor_boot)
       case $block in
         boot) parttype="ramdisk boot BOOT LNX android_boot bootimg KERN-A kernel KERNEL";;
         recovery) parttype="ramdisk_recovery recovery RECOVERY SOS android_recovery";;
+        vendor_boot) parttype="vendor_boot";;
       esac;
       for name in $parttype; do
         for part in $name$slot $name; do
@@ -774,7 +791,9 @@ setup_ak() {
       fi;
     ;;
   esac;
-#  ui_print "$block";
+  if [ ! "$no_block_display" ]; then
+    ui_print "$block";
+  fi;
 }
 ###
 
