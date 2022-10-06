@@ -181,7 +181,9 @@ unpack_ramdisk() {
 }
 ### dump_boot (dump and split image, then extract ramdisk)
 dump_boot() {
+  ui_print "  • Unpacking boot image";
   split_boot;
+  ui_print "  • Unpacking ramdisk";
   unpack_ramdisk;
 }
 ###
@@ -238,6 +240,8 @@ repack_ramdisk() {
 # flash_boot (build, sign and write image only)
 flash_boot() {
   local varlist i kernel ramdisk fdt cmdline comp part0 part1 nocompflag signfail pk8 cert avbtype;
+
+  ui_print "  • Repacking boot image";
 
   cd $split_img;
   if [ -f "$bin/mkimage" ]; then
@@ -319,7 +323,7 @@ flash_boot() {
           magisk_patched=$?;
         fi;
         if [ $((magisk_patched & 3)) -eq 1 ]; then
-          ui_print " " "Magisk detected! Patching kernel so reflashing Magisk is not necessary...";
+          ui_print "  • Saving Magisk";
           comp=$($bin/magiskboot decompress kernel 2>&1 | grep -vE 'raw|zimage' | sed -n 's;.*\[\(.*\)\];\1;p');
           ($bin/magiskboot split $kernel || $bin/magiskboot decompress $kernel kernel) 2>/dev/null;
           if [ $? != 0 -a "$comp" ] && $comp --help 2>/dev/null; then
@@ -399,6 +403,8 @@ flash_boot() {
     abort "New image larger than target partition. Aborting...";
   fi;
   blockdev --setrw $block 2>/dev/null;
+
+  ui_print "  • Flashing new boot image";
   if [ -f "$bin/flash_erase" -a -f "$bin/nandwrite" ]; then
     $bin/flash_erase $block 0 0;
     $bin/nandwrite -p $block boot-new.img;
@@ -510,6 +516,7 @@ flash_dtbo() { flash_generic dtbo; }
 
 ### write_boot (repack ramdisk then build, sign and write image, vendor_dlkm and dtbo)
 write_boot() {
+  ui_print "  • Repacking ramdisk";
   repack_ramdisk;
   flash_boot;
   flash_generic vendor_boot; # temporary until hdr v4 can be unpacked/repacked fully by magiskboot

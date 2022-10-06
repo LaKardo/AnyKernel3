@@ -4,7 +4,6 @@
 ## AnyKernel setup
 # begin properties
 properties() { '
-kernel.string=Kernel for S20 FE (Snapdragon) by pascua28 @ xda-developers
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -23,6 +22,7 @@ supported.patchlevels=
 block=/dev/block/platform/soc/1d84000.ufshc/by-name/boot;
 is_slot_device=0;
 ramdisk_compression=auto;
+no_block_display=1
 patch_vbmeta_flag=auto;
 
 ## AnyKernel methods (DO NOT CHANGE)
